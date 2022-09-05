@@ -1,0 +1,124 @@
+//For ESP32 microcontroller
+
+#include <esp_now.h> //ESP-NOW
+#include <WiFi.h> //ESP-NOW
+#include <ESP32Servo.h> //Servo control
+#include <AccelStepper.h> //Stepper control (easier than default anyway)
+
+int dataLed = 19;
+float gripperRotation;
+
+Servo gripperRotationServo;
+Servo gripperServo;
+
+AccelStepper midActuator(1, 15, 16);   // (Type:driver(1 is default driver), STEP, DIR)
+AccelStepper topActuator(1, 17, 18); // (Type:driver(1 is default driver), STEP, DIR)
+AccelStepper baseActuator(1, 13, 14);   // (Type:driver(1 is default driver), STEP, DIR)
+
+float baseActuatorSpeed;
+float midActuatorSpeed;
+float topActuatorSpeed;
+
+int gripperRotationServoAngle;
+int gripperServoAngle;
+
+//Structure data being recieved
+typedef struct struct_message {
+    int yData;
+    int xData;
+    int flexData;
+    int jointSwitch;
+} struct_message;
+
+struct_message dataSent; //Declare data recieved
+
+//Call data recieved
+void data_receive(const uint8_t * mac, const uint8_t *incomingData, int len) {
+   memcpy(&dataSent, incomingData, sizeof(dataSent));
+   }
+
+ void setup() {
+  Serial.begin(115200); //Begin serial communication
+
+  pinMode(dataLed, OUTPUT);
+
+  WiFi.mode(WIFI_STA); //Initialize WiFi for ESP-NOW
+  esp_now_init();
+
+  gripperRotationServo.attach(25);
+  gripperServo.attach(26);
+
+  //Check ESP-NOW initilization (check for error with sending data)
+  if (esp_now_init() != ESP_OK) {
+    Serial.println("Error initializing ESP-NOW");
+    digitalWrite(dataLed, LOW);
+    return;
+  }
+
+  else {
+    digitalWrite(dataLed, HIGH);
+  }
+
+  baseActuator.setMaxSpeed(1000); //Max speed for stepper
+  midActuator.setMaxSpeed(1000);
+  topActuator.setMaxSpeed(1000);
+  esp_now_register_recv_cb(data_receive); //Recieve data
+
+}
+ 
+void loop() {
+  
+  if (dataSent.jointSwitch == HIGH) {
+    topActuatorSpeed = 0;
+    midActuatorSpeed = map(dataSent.yData, 40, 140, -800, 800);
+    if ((midActuatorSpeed > -50) && (midActuatorSpeed < 50)) {
+      midActuatorSpeed = 0;
+    }
+  }
+
+  else {
+    midActuatorSpeed = 0;
+    topActuatorSpeed = map(dataSent.yData, 40, 140, 800, -800);
+    if ((topActuatorSpeed > -50) && (topActuatorSpeed < 50)) {
+      topActuatorSpeed = 0;
+    }
+  }
+
+  gripperServoAngle = dataSent.flexData; //Set gripper servo to flex data
+
+  baseActuatorSpeed = map(dataSent.xData, 40, 140, -800, 800); //Map x rotation values to speed values
+  if ((baseActuatorSpeed > -50) && (baseActuatorSpeed < 50)) {
+    baseActuatorSpeed = 0;
+  }
+
+  //Control gripper
+  if (gripperServoAngle > 70) { //Grip completely if close
+    gripperServoAngle = 90;
+  }
+  gripperServo.write(gripperServoAngle); //Write servo angle to gripper
+
+  if (gripperServoAngle < 33) {
+    baseActuatorSpeed = 0;
+    gripperRotation = map(dataSent.xData, 0, 180, 0, 181);
+    gripperRotationServo.write(gripperRotation);
+  }
+  
+  //Control base stepper
+  baseActuator.setSpeed(baseActuatorSpeed); //Send the speed values to the stepper 
+  
+  //Control mid stepper
+  midActuator.setSpeed(midActuatorSpeed); //Send the speed values to the stepper 
+  
+  //Control top stepper
+  topActuator.setSpeed(topActuatorSpeed);
+  
+  //Serial.println(midActuatorSpeed);
+  //Serial.println(topActuatorSpeed);
+  //Serial.println(baseActuatorSpeed);
+  //Serial.println(gripperServoAngle);
+  midActuator.runSpeed(); //Run stepper
+  baseActuator.runSpeed(); //Run stepper
+  topActuator.runSpeed(); //Run stepper
+
+  //Unable to add delay because it will mess with stepper pulses :(
+}
