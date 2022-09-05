@@ -1,0 +1,142 @@
+//For ESP32 Microcontroller
+
+#include <esp_now.h>
+#include <WiFi.h>
+#include <Adafruit_MPU6050.h>
+#include <Adafruit_Sensor.h>
+#include <Wire.h>
+
+Adafruit_MPU6050 mpu;
+
+const int flexPin = 36; //Pin that's reading resistance value on flex sensor (MUST BE ADC1 PIN!)
+int dataLed = 19;
+int powerLed = 17;
+bool jointState;
+bool error;
+
+unsigned long prevMillis;  //some global variables available anywhere in the program
+unsigned long currentMillis;
+
+// REPLACE WITH YOUR RECEIVER MAC Address (Ex: C8:F0:9E:A1:CF:30)
+uint8_t broadcastAddress[] = {0xC8, 0xF0, 0x9E, 0xA1, 0xCF, 0x30};
+
+//Define structure to store all the data that will be sent to reciever
+typedef struct struct_message {
+  int yData;
+  int xData;
+  int flexData;
+  int jointSwitch;
+} struct_message;
+struct_message dataSent;
+
+//Check status of delivery
+void data_sent(const uint8_t *mac_addr, esp_now_send_status_t status) {
+  Serial.print("\r\nStatus of Last Message Sent:\t");
+  Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Delivery Success" : "Delivery Fail");
+}
+
+void setup() {
+
+  digitalWrite(26, HIGH);
+  digitalWrite(powerLed, HIGH);
+  
+  //Initalize WiFi, ESP-NOW and baud rate. (Must init WiFi before ESP-NOW)
+  Serial.begin(115200);
+  WiFi.mode(WIFI_STA);
+  esp_now_init();
+
+  //Check if MPU chip is found
+  if (!mpu.begin()) {
+    Serial.println("Failed to find MPU6050 chip");
+    while (1) {
+      delay(10);
+    }
+  }
+  else {
+    Serial.println("MPU6050 Found!");
+  }
+  
+  //Initalize pinmodes
+  pinMode(flexPin, INPUT);
+  pinMode(dataLed, OUTPUT);
+  pinMode(powerLed, OUTPUT);
+  pinMode(25, INPUT);
+  pinMode(26, OUTPUT);
+
+
+  //Returns whether the delivery was successful or not unpon sending data
+  esp_now_register_send_cb(data_sent);
+  
+  //Add peer
+  esp_now_peer_info_t peerInfo;
+  memcpy(peerInfo.peer_addr, broadcastAddress, 6);
+  peerInfo.channel = 0;  
+  peerInfo.encrypt = false;     
+
+  //Check if peer added
+  if (esp_now_add_peer(&peerInfo) != ESP_OK){
+    Serial.println("Failed to add peer");
+  }
+
+  // set accelerometer range to +-8G
+  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
+
+  // set gyro range to +- 500 deg/s
+  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
+
+  // set filter bandwidth to 21 Hz
+  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+
+  prevMillis = millis();
+  delay(100);
+}
+ 
+void loop() {
+
+  currentMillis = millis();
+
+  sensors_event_t a, g, temp;
+  mpu.getEvent(&a, &g, &temp);
+
+  jointState = false;
+
+  if (digitalRead(25) == HIGH) {
+    jointState = true;
+  }
+  else if (digitalRead(25) == LOW) {
+    jointState = false;
+  }
+
+  Serial.println(jointState);
+  //Gather data to be sent via ESP-NOW
+  float xRotation = map(a.acceleration.x, -9.8, 9.8, 0, 180);
+  float yRotation = map(a.acceleration.y, -9.8, 9.8, 0, 180);
+  float flexValue = analogRead(flexPin);
+  flexValue = map(flexValue, 0, 4095, 0 , 90); //Read and save analog flexData from potentiometer
+
+  dataSent.jointSwitch = jointState;
+  dataSent.yData = yRotation;
+  dataSent.xData = xRotation;
+  dataSent.flexData = flexValue;
+  
+  //Send the data (dataSent) and check if there was a error sending the data
+  esp_err_t outcome = esp_now_send(broadcastAddress, (uint8_t *) &dataSent, sizeof(dataSent));
+  if (outcome == ESP_OK) {
+    //Serial.println("Mesage sent successfully!");
+    error = false;
+  }
+  else {
+    //Serial.println("Error sending the message");
+    error = true;
+  }
+  
+  if (currentMillis - prevMillis > 500) {
+    if (error == true) {
+      digitalWrite(dataLed, LOW);
+    }
+    else {
+      digitalWrite(dataLed, HIGH);
+    }
+    prevMillis = currentMillis;
+  } 
+}
